@@ -43,7 +43,6 @@ include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
 
 set(LIBS)
 
-
 ## Dependencies
 
 # ImGui
