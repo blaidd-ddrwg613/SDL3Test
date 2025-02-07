@@ -1,50 +1,58 @@
+// ----------------------------------------------------------------
+// From Game Programming in C++ by Sanjay Madhav
+// Copyright (C) 2017 Sanjay Madhav. All rights reserved.
+//
+// Released under the BSD License
+// See LICENSE in root directory for full details.
+// ----------------------------------------------------------------
+
 #include "Game.h"
-#include "iostream"
+#include "SDL3_image/SDL_image.h"
+#include <algorithm>
+#include "Actor.h"
+#include "SpriteComponent.h"
+#include "Ship.h"
+#include "BGSpriteComponent.h"
 
 Game::Game()
+        :mWindow(nullptr)
+        ,mRenderer(nullptr)
+        ,mIsRunning(true)
+        ,mUpdatingActors(false)
 {
-    window = nullptr;
-    renderer = nullptr;
-    isRunning = true;
-    tickCount = 0;
-//    paddleDir = 0;
-    bVelocity = {-200.0f, 235.0f};
 
-    // Set the Ball to the center of the screen, center pos
-    ballPos = {1080 / 2.0, 720 / 2.0};
-    // Set the Paddle to the left side of the screen, center pos
-//    paddlePos = { 10.0f, (720 / 2.0) };
-
-    lPaddle = {10.0f, (720 / 2.0f)}, 0;
-    rPaddle = {1070.0f, (720 /2.0f), 0};
 }
 
-bool Game::Init()
+bool Game::Initialize()
 {
-    int sdlResult = SDL_Init(SDL_INIT_VIDEO);
-    if (!sdlResult)
+    if (!SDL_Init(SDL_INIT_VIDEO))
     {
-        SDL_Log("Failed to init SDL: %s", SDL_GetError());
+        SDL_Log("Unable to initialize SDL: %s", SDL_GetError());
         return false;
     }
-    SDL_WindowFlags flags = NULL;
-    SDL_CreateWindowAndRenderer(wTitle.c_str(), wWidth, wHeight, flags, &window, &renderer);
-    if (!window)
+
+    SDL_CreateWindowAndRenderer(wTitle.c_str(), wWidth, wHeight, NULL, &mWindow, &mRenderer);
+    if (!mWindow)
     {
-        SDL_Log("Failed to create window: %s\n", SDL_GetError());
+        SDL_Log("Failed to create window: %s", SDL_GetError());
         return false;
     }
-    if (!renderer)
+    if (!mRenderer)
     {
-        SDL_Log("Failed to create renderer: %s\n", SDL_GetError());
+        SDL_Log("Failed to create renderer: %s", SDL_GetError());
         return false;
     }
+
+    LoadData();
+
+    mTicksCount = SDL_GetTicks();
+
     return true;
 }
 
 void Game::RunLoop()
 {
-    while(isRunning)
+    while (mIsRunning)
     {
         ProcessInput();
         UpdateGame();
@@ -57,214 +65,235 @@ void Game::ProcessInput()
     SDL_Event event;
     while (SDL_PollEvent(&event))
     {
-        if (event.type == SDL_EVENT_QUIT)
+        switch (event.type)
         {
-            isRunning = false;
+            case SDL_EVENT_QUIT:
+                mIsRunning = false;
+                break;
         }
     }
 
-    // Get and store the state of the keyboard and poll for keys
     const bool* state = SDL_GetKeyboardState(NULL);
     if (state[SDL_SCANCODE_ESCAPE])
     {
-        isRunning = false;
-    }
-//    ballDir = 0;
-//    if (state[SDL_SCANCODE_A])
-//    {
-//        ballDir = -1;
-//    }
-//    if (state[SDL_SCANCODE_D])
-//    {
-//        ballDir = 1;
-//    }
-
-    lPaddle.paddleDir = 0;
-    if (state[SDL_SCANCODE_W])
-    {
-        lPaddle.paddleDir = -1;
-    }
-    if (state[SDL_SCANCODE_S])
-    {
-        lPaddle.paddleDir = 1;
+        mIsRunning = false;
     }
 
-    rPaddle.paddleDir = 0;
-    if (state[SDL_SCANCODE_UP])
-    {
-        rPaddle.paddleDir = -1;
-    }
-    if (state[SDL_SCANCODE_DOWN])
-    {
-        rPaddle.paddleDir = 1;
-    }
-
+    // Process ship input
+    mShip->ProcessKeyboard(state);
 }
 
 void Game::UpdateGame()
 {
-    deltatime = CalculateDeltaTime();
-
-    // Clamp Delta time
-    if (deltatime > 0.05f)
+    float deltaTime = CalculateDeltaTime();
+    if (deltaTime > 0.05f)
     {
-        deltatime = 0.05f;
+        deltaTime = 0.05f;
     }
+    mTicksCount = SDL_GetTicks();
 
-
-    if (lPaddle.paddleDir != 0)
+    // Update all actors
+    mUpdatingActors = true;
+    for (auto actor : mActors)
     {
-        lPaddle.pos.y += lPaddle.paddleDir * paddleSpeed * deltatime;
-        // Clamp paddle to screen bounds
-        if (lPaddle.pos.y < (pHeight/2.0f + thickness))
-        {
-            lPaddle.pos.y = pHeight/2.0f + thickness;
-        }
-        if (lPaddle.pos.y > (720.0f - pHeight/2.0f - thickness + 10))
-        {
-            lPaddle.pos.y = 720.0f - pHeight/2.0f - thickness + 10;
-        }
+        actor->Update(deltaTime);
     }
+    mUpdatingActors = false;
 
-//        if (ballDir != 0)
-//        {
-//            ballPos.x += ballDir * 200 * deltaTime;
-//        }
-
-    if (rPaddle.paddleDir != 0)
+    // Move any pending actors to mActors
+    for (auto pending : mPendingActors)
     {
-        rPaddle.pos.y += rPaddle.paddleDir * paddleSpeed * deltatime;
-        // Clamp paddle to screen bounds
-        if (rPaddle.pos.y < (pHeight/2.0f + thickness))
+        mActors.emplace_back(pending);
+    }
+    mPendingActors.clear();
+
+    // Add any dead actors to a temp vector
+    std::vector<Actor*> deadActors;
+    for (auto actor : mActors)
+    {
+        if (actor->GetState() == Actor::DEAD)
         {
-            rPaddle.pos.y = pHeight/2.0f + thickness;
-        }
-        if (rPaddle.pos.y > (720.0f - pHeight/2.0f - thickness + 10))
-        {
-            rPaddle.pos.y = 720.0f - pHeight/2.0f - thickness + 10;
+            deadActors.emplace_back(actor);
         }
     }
 
-    ballPos.x += bVelocity.x * deltatime;
-    ballPos.y += bVelocity.y * deltatime;
-
-    // Bounce if needed
-    // Did we intersect with the paddle?
-    float diff = lPaddle.pos.y - ballPos.y;
-    float diffR = rPaddle.pos.y - ballPos.y;
-    // Take absolute value of difference
-    diff = (diff > 0.0f) ? diff : -diff;
-    diffR = (diffR > 0.0f) ? diffR : -diffR;
-//    if (diffR > 0.0f)
-//    {
-//        SDL_Log("Ball Pos: %f : %f", ballPos.x, ballPos.y);
-//    }
-
-    if (
-        // Our y-difference is small enough
-            diff <= pHeight / 2.0f &&
-            // We are in the correct x-position
-            ballPos.x <= 25.0f && ballPos.x >= 20.0f &&
-            // The ball is moving to the left
-            bVelocity.x < 0.0f)
+    // Delete dead actors (which removes them from mActors)
+    for (auto actor : deadActors)
     {
-        bVelocity.x *= -1.0f;
-    }
-    if (
-        // Our y-difference is small enough
-            diffR <= pHeight / 2.0f &&
-            // We are in the correct x-position
-            ballPos.x >= (1070 - 25.0f) && ballPos.x >= (1070 - 20.0f) &&
-            // The ball is moving to the right
-            bVelocity.x > 0.0f)
-    {
-        bVelocity.x *= -1.0f;
-    }
-//    SDL_Log("Ball Velocity: %f : %f", bVelocity.x, bVelocity.y);
-
-    if (ballPos.x <= 0.0f)
-    {
-//            bVelocity.x *= -1;
-        isRunning = false;
-    }
-
-    if (ballPos.x >= 1080)
-    {
-//            bVelocity.x *= -1;
-        isRunning = false;
-    }
-
-    // Top Wall Collision
-    if (ballPos.y <= thickness && bVelocity.y < 0.0f)
-    {
-        bVelocity.y *= -1;
-    }
-    // Bottom Wall Collision
-    if (ballPos.y >= (720 - thickness) && bVelocity.y > 0.0f)
-    {
-        bVelocity.y *= -1;
+        delete actor;
     }
 }
 
 void Game::GenerateOutput()
 {
-    // Set the color for the buffer
-    SDL_SetRenderDrawColor(renderer,Purple);
-    // Clear the buffer and use our set color
-    SDL_RenderClear(renderer);
+    SDL_SetRenderDrawColor(mRenderer, 0, 0, 0, 255);
+    SDL_RenderClear(mRenderer);
 
-    // Draw
-    SDL_SetRenderDrawColor(renderer, WHITE);
+    // Draw all sprite components
+    for (auto sprite : mSprites)
+    {
+        sprite->Draw(mRenderer);
+    }
 
-    // Draw Walls
-    SDL_FRect wall {0, 0, 1080, (float)thickness};
-    SDL_RenderFillRect(renderer, &wall);
+    SDL_RenderPresent(mRenderer);
+}
 
-    wall.y = 720 - thickness;
-    SDL_RenderFillRect(renderer,&wall);
+void Game::LoadData()
+{
+    // Create player's ship
+    mShip = new Ship(this);
+    mShip->SetPosition(Vector2(100.0f, 384.0f));
+    mShip->SetScale(1.5f);
 
-
-    // Draw Paddle
-    int height = thickness * 7.5;
-    SDL_FRect paddleL {
-            (lPaddle.pos.x - thickness/2.0f),
-            (lPaddle.pos.y - height /2.0f),
-            (float)thickness,
-            (float)pHeight
+    // Create actor for the background (this doesn't need a subclass)
+    Actor* temp = new Actor(this);
+    temp->SetPosition(Vector2(512.0f, 384.0f));
+    // Create the "far back" background
+    BGSpriteComponent* bg = new BGSpriteComponent(temp);
+    bg->SetScreenSize(Vector2(1024.0f, 768.0f));
+    std::vector<SDL_Texture*> bgtexs = {
+            GetTexture(RESOURCES_PATH"textures/background/Farback01.png"),
+            GetTexture(RESOURCES_PATH"textures/background/Farback02.png")
     };
-
-    SDL_FRect paddleR {
-            (rPaddle.pos.x - thickness/2.0f),
-            (rPaddle.pos.y - height /2.0f),
-            (float)thickness,
-            (float)pHeight
+    bg->SetBGTextures(bgtexs);
+    bg->SetScrollSpeed(-100.0f);
+    // Create the closer background
+    bg = new BGSpriteComponent(temp, 50);
+    bg->SetScreenSize(Vector2(1024.0f, 768.0f));
+    bgtexs = {
+            GetTexture(RESOURCES_PATH"textures/background/Stars.png"),
+            GetTexture(RESOURCES_PATH"textures/background/Stars.png")
     };
+    bg->SetBGTextures(bgtexs);
+    bg->SetScrollSpeed(-200.0f);
+}
 
+void Game::UnloadData()
+{
+    // Delete actors
+    // Because ~Actor calls RemoveActor, have to use a different style loop
+    while (!mActors.empty())
+    {
+        delete mActors.back();
+    }
 
-    // Draw Ball
-    SDL_FRect ball {
-            (ballPos.x - thickness/2.0f),
-            (ballPos.y - thickness/2.0f),
-            (float)thickness,
-            (float)thickness};
+    // Destroy textures
+    for (auto i : mTextures)
+    {
+        SDL_DestroyTexture(i.second);
+    }
+    mTextures.clear();
+}
 
-    // Render all the Things
-//    SDL_RenderFillRect(renderer, &wall);
-    SDL_RenderFillRect(renderer, &paddleL);
-    SDL_RenderFillRect(renderer, &paddleR);
-    SDL_RenderFillRect(renderer, &ball);
+SDL_Texture* Game::GetTexture(const std::string& fileName)
+{
+    SDL_Texture* tex = nullptr;
+    // Is the texture already in the map?
+    auto iter = mTextures.find(fileName);
+    if (iter != mTextures.end())
+    {
+        tex = iter->second;
+    }
+    else
+    {
+        // Load from file
+        SDL_Surface* surf = IMG_Load(fileName.c_str());
+        if (!surf)
+        {
+            SDL_Log("Failed to load texture file %s", fileName.c_str());
+            return nullptr;
+        }
 
-    // Swap the buffers
-    SDL_RenderPresent(renderer);
+        // Create texture from surface
+        tex = SDL_CreateTextureFromSurface(mRenderer, surf);
+        SDL_DestroySurface(surf);
+        if (!tex)
+        {
+            SDL_Log("Failed to convert surface to texture for %s", fileName.c_str());
+            return nullptr;
+        }
+
+        mTextures.emplace(fileName.c_str(), tex);
+    }
+    return tex;
+}
+
+void Game::Shutdown()
+{
+    UnloadData();
+    SDL_DestroyRenderer(mRenderer);
+    SDL_DestroyWindow(mWindow);
+    SDL_Quit();
+}
+
+void Game::AddActor(Actor* actor)
+{
+    // If we're updating actors, need to add to pending
+    if (mUpdatingActors)
+    {
+        mPendingActors.emplace_back(actor);
+    }
+    else
+    {
+        mActors.emplace_back(actor);
+    }
+}
+
+void Game::RemoveActor(Actor* actor)
+{
+    // Is it in pending actors?
+    auto iter = std::find(mPendingActors.begin(), mPendingActors.end(), actor);
+    if (iter != mPendingActors.end())
+    {
+        // Swap to end of vector and pop off (avoid erase copies)
+        std::iter_swap(iter, mPendingActors.end() - 1);
+        mPendingActors.pop_back();
+    }
+
+    // Is it in actors?
+    iter = std::find(mActors.begin(), mActors.end(), actor);
+    if (iter != mActors.end())
+    {
+        // Swap to end of vector and pop off (avoid erase copies)
+        std::iter_swap(iter, mActors.end() - 1);
+        mActors.pop_back();
+    }
+}
+
+void Game::AddSprite(SpriteComponent* sprite)
+{
+    // Find the insertion point in the sorted vector
+    // (The first element with a higher draw order than me)
+    int myDrawOrder = sprite->GetDrawOrder();
+    auto iter = mSprites.begin();
+    for ( ;
+            iter != mSprites.end();
+            ++iter)
+    {
+        if (myDrawOrder < (*iter)->GetDrawOrder())
+        {
+            break;
+        }
+    }
+
+    // Inserts element before position of iterator
+    mSprites.insert(iter, sprite);
+}
+
+void Game::RemoveSprite(SpriteComponent* sprite)
+{
+    // (We can't swap because it ruins ordering)
+    auto iter = std::find(mSprites.begin(), mSprites.end(), sprite);
+    mSprites.erase(iter);
 }
 
 float Game::CalculateDeltaTime()
 {
-    while (!SDL_GetTicks() >= tickCount + 16)
+    while (!SDL_GetTicks() >= mTicksCount + 16)
         ;
     // Converted to seconds
-    float deltaTime = (SDL_GetTicks() - tickCount) / 1000.0f;
-    tickCount = SDL_GetTicks();
+    float deltaTime = (SDL_GetTicks() - mTicksCount) / 1000.0f;
+    mTicksCount = SDL_GetTicks();
 
     // Clamp maximum delta value
     if (deltaTime > 0.05f)
@@ -273,11 +302,4 @@ float Game::CalculateDeltaTime()
     }
 
     return deltaTime;
-}
-
-void Game::Shutdown()
-{
-    SDL_DestroyWindow(window);
-    SDL_DestroyRenderer(renderer);
-    SDL_Quit();
 }
